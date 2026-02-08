@@ -1,0 +1,15 @@
+services:
+  sorai-permalink-resolver:
+    build: .
+    image: sorai-permalink-resolver:latest
+    container_name: sorai-permalink-resolver
+    restart: unless-stopped
+    ports:
+      - "3131:3131"
+    environment:
+      PORT: "3131"
+      HOST: "0.0.0.0"
+      SPR_STRICT_PORT: "1"
+      SORAI_PARSE_URL: "${SORAI_PARSE_URL}"
+      SORAI_PARSE_TOKEN: "${SORAI_PARSE_TOKEN}"
+

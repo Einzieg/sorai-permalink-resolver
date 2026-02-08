@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Sora 直链解析工具</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg" aria-hidden="true"></div>
+
+    <header class="top">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"></div>
+        <div>
+          <div class="title">Sora 直链解析工具</div>
+          <div class="subtitle">输入永久链接，输出直链</div>
+        </div>
+      </div>
+      <div class="hint">
+        调用你的解析服务器 <code>/get-sora-link</code> 接口。
+        <a class="link" href="#" id="openReadme">文档</a>
+      </div>
+    </header>
+
+    <main class="wrap">
+      <section class="card">
+        <div class="cardHead">
+          <h1>解析</h1>
+        </div>
+
+        <label class="field">
+          <div class="labelRow">
+            <span>永久链接 或 <code>s_...</code></span>
+            <button class="ghost" type="button" id="pasteBtn">粘贴</button>
+          </div>
+          <textarea
+            id="permalink"
+            rows="3"
+            placeholder="https://sora.chatgpt.com/p/s_69883dbf83c08191bbab884c3d867b33"
+            spellcheck="false"
+          ></textarea>
+          <div class="help" id="normalizedHelp"></div>
+        </label>
+
+        <details class="advanced" id="advancedBox">
+          <summary>高级</summary>
+          <div class="grid2">
+            <label class="field">
+              <div class="labelRow"><span>超时 (ms)</span></div>
+              <input id="timeoutMs" type="number" inputmode="numeric" min="1000" step="500" />
+            </label>
+            <label class="field">
+              <div class="labelRow"><span>代理接口（可选）</span></div>
+              <input
+                id="proxyEndpoint"
+                type="url"
+                inputmode="url"
+                placeholder="http://127.0.0.1:3131/api/resolve"
+                spellcheck="false"
+              />
+              <div class="help">
+                如遇跨域（CORS）拦截，请使用本地服务访问本页面并通过代理接口解析。
+              </div>
+            </label>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button class="btn" type="button" id="resolveBtn">
+            <span class="btnText">解析</span>
+            <span class="spinner" aria-hidden="true"></span>
+          </button>
+          <button class="btn secondary" type="button" id="clearBtn">清空</button>
+          <div class="status" id="status"></div>
+        </div>
+
+        <div class="resultRow">
+          <div class="resultLabel">直链 (download_link)</div>
+          <div class="resultActions">
+            <button class="ghost" type="button" id="copyBtn" disabled>复制</button>
+            <button class="ghost" type="button" id="openBtn" disabled>打开</button>
+            <button class="ghost" type="button" id="downloadBtn" disabled>下载</button>
+          </div>
+        </div>
+        <div class="resultBox" id="resultBox">
+          <div class="placeholder">暂无结果。</div>
+        </div>
+        <details class="raw">
+          <summary>原始 JSON</summary>
+          <pre id="rawJson" class="code"></pre>
+        </details>
+      </section>
+
+      <section class="card out" id="outCard" aria-live="polite">
+        <div class="cardHead">
+          <h2>结果</h2>
+          <div class="pill subtle" id="sourcePill" title="来源">-</div>
+        </div>
+
+        <div class="preview" id="previewWrap" hidden>
+          <div class="resultRow previewHead">
+            <div class="resultLabel">预览</div>
+            <div class="hintSmall" id="videoHint"></div>
+          </div>
+          <video id="videoPreview" class="video" controls playsinline preload="metadata"></video>
+        </div>
+
+
+      </section>
+
+      <footer class="foot">
+        <div>
+          提示：输入可以是完整永久链接或只填 <code>s_...</code>。本页面不会直接请求 Sora，只会请求你的解析服务器。
+        </div>
+      </footer>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

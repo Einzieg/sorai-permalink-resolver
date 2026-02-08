@@ -1,0 +1,17 @@
+{
+  "name": "sorai-permalink-resolver",
+  "version": "0.1.0",
+  "description": "Resolve Sora permalink (s_...) to a direct download link via a custom parse server.",
+  "license": "MIT",
+  "private": true,
+  "bin": {
+    "sorai-permalink": "./bin/sorai-permalink.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node ./server.js",
+    "cli": "node ./bin/sorai-permalink.js"
+  }
+}
