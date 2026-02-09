@@ -110,14 +110,14 @@ function applyServerConfig(cfg) {
   const port = cfg.port;
 
   if (parseUrlFromServer && hasToken) {
-    setStatus(`已从服务端加载 .env 配置${port ? `（端口 ${port}）` : ''}。`, 'info');
+    setStatus(`已从服务端加载配置。`, 'info');
     return;
   }
 
   const miss = [];
   if (!parseUrlFromServer) miss.push('SORAI_PARSE_URL');
   if (!hasToken) miss.push('SORAI_PARSE_TOKEN');
-  setStatus(`缺少 .env 配置：${miss.join(' 和 ')}。`, 'error');
+  setStatus(`缺少配置：${miss.join(' 和 ')}。`, 'error');
 }
 
 function setStatus(msg, kind = 'info') {

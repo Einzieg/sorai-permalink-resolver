@@ -10,6 +10,7 @@ services:
       PORT: "3131"
       HOST: "0.0.0.0"
       SPR_STRICT_PORT: "1"
+      SPR_AUTH_KEY: "${SPR_AUTH_KEY}"
       SORAI_PARSE_URL: "${SORAI_PARSE_URL}"
       SORAI_PARSE_TOKEN: "${SORAI_PARSE_TOKEN}"
 

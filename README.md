@@ -25,6 +25,7 @@ Copy `d:\sorai-permalink-resolver\.env.example` to `.env` and edit:
 
 ```text
 PORT=3131
+SPR_AUTH_KEY=YOUR_SITE_KEY
 SORAI_PARSE_URL=https://api.sorai.me
 SORAI_PARSE_TOKEN=YOUR_TOKEN
 SPR_LOCK_CONFIG=1
@@ -42,6 +43,8 @@ npm start
 Then open:
 
 - `http://127.0.0.1:3131/` (if 3131 is busy, the server will auto-pick the next free port unless `SPR_STRICT_PORT=1`)
+
+If you set `SPR_AUTH_KEY`, the site will ask for the key on entry.
 
 You can also force a port:
 
