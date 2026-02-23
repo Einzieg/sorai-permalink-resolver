@@ -10,6 +10,7 @@ const STORAGE = {
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 let SERVER_CONFIG = null;
+let MEDIA_INFO_SEQ = 0;
 
 function $(id) {
   return document.getElementById(id);
@@ -79,6 +80,74 @@ function suggestFilenameFromUrl(link) {
 function guessProxyEndpoint() {
   if (location.protocol === 'file:') return 'http://127.0.0.1:3131/api/resolve';
   return `${location.origin}/api/resolve`;
+}
+
+function guessMediaInfoEndpoint(proxyEndpoint) {
+  const fallback =
+    location.protocol === 'file:'
+      ? 'http://127.0.0.1:3131/api/media-info'
+      : `${location.origin}/api/media-info`;
+
+  const raw = safeText(proxyEndpoint).trim();
+  const base = location.protocol === 'file:' ? 'http://127.0.0.1' : location.origin;
+
+  let u;
+  try {
+    u = new URL(raw || guessProxyEndpoint(), base);
+  } catch {
+    return fallback;
+  }
+
+  if (u.pathname.endsWith('/api/resolve')) {
+    u.pathname = u.pathname.replace(/\/api\/resolve$/, '/api/media-info');
+  } else {
+    u.pathname = '/api/media-info';
+  }
+  return u.toString();
+}
+
+function setMediaInfo(info) {
+  const wrap = $('mediaInfoWrap');
+  const pre = $('mediaInfoJson');
+  if (!wrap || !pre) return;
+
+  if (!info) {
+    wrap.hidden = true;
+    pre.textContent = '';
+    return;
+  }
+
+  wrap.hidden = false;
+  pre.textContent = JSON.stringify(info, null, 2);
+}
+
+async function fetchMediaInfo({ url, timeoutMs, proxyEndpoint }) {
+  const endpoint = guessMediaInfoEndpoint(proxyEndpoint);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const payload = { url, timeout_ms: timeoutMs, ffprobe: 1 };
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal,
+    });
+    const text = await res.text();
+    let json;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      const hint = json && typeof json === 'object' ? JSON.stringify(json) : text;
+      throw new Error(`媒体信息请求失败：HTTP ${res.status} ${res.statusText}${hint ? `: ${hint}` : ''}`);
+    }
+    return json || {};
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 async function loadServerConfig() {
@@ -302,6 +371,8 @@ async function resolveProxy({ permalink, timeoutMs, proxyEndpoint }) {
 async function onResolve() {
   saveSettings();
 
+  const seq = ++MEDIA_INFO_SEQ;
+
   const permalink = normalizePermalink($('permalink').value);
   const timeoutMs = Number($('timeoutMs').value) || DEFAULT_TIMEOUT_MS;
   const proxyEndpoint = $('proxyEndpoint').value.trim();
@@ -315,6 +386,7 @@ async function onResolve() {
   $('resolveBtn').disabled = true;
   setStatus('解析中...');
   setSource('-');
+  setMediaInfo(null);
 
   const started = performance.now();
   try {
@@ -335,11 +407,25 @@ async function onResolve() {
     setSource(source);
     setResult(dl, json);
 
+    if (typeof dl === 'string' && dl.trim()) {
+      setMediaInfo({ loading: true, url: dl });
+      fetchMediaInfo({ url: dl, timeoutMs, proxyEndpoint })
+        .then((info) => {
+          if (seq !== MEDIA_INFO_SEQ) return;
+          setMediaInfo(info);
+        })
+        .catch((e) => {
+          if (seq !== MEDIA_INFO_SEQ) return;
+          setMediaInfo({ error: String(e && e.message ? e.message : e), url: dl });
+        });
+    }
+
     const ms = Math.round(performance.now() - started);
     setStatus(`成功（${ms} ms）`, 'ok');
   } catch (e) {
     const msg = String(e && e.message ? e.message : e);
     setResult(null, { error: msg });
+    setMediaInfo(null);
     setStatus(msg, 'error');
   } finally {
     $('resolveBtn').classList.remove('loading');
@@ -352,6 +438,7 @@ function onClear() {
   const help = $('normalizedHelp');
   if (help) help.textContent = '';
   setResult(null, null);
+  setMediaInfo(null);
   setSource('-');
   setStatus('已清空。');
 }

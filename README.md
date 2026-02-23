@@ -52,6 +52,22 @@ You can also force a port:
 $env:PORT=3132; npm start
 ```
 
+### Media metadata API (optional)
+
+When you run the local server, you can inspect a direct media URL (typically the resolved `download_link`) via:
+
+- `POST /api/media-info`
+- Body: `{ "url": "https://videos.openai.com/az/files/...", "ffprobe": 1 }`
+
+Notes:
+
+- By default, `/api/media-info` only allows `videos.openai.com` (to reduce SSRF risk). Override with `SPR_MEDIA_ALLOW_HOSTS` (comma-separated hostnames, or `*`).
+- When `ffprobe=1`, the server downloads the media to a temp file first, then runs `ffprobe` on the local file.
+- Temp download size is limited by `SPR_MEDIA_MAX_BYTES` (default 512 MiB).
+- Use `SPR_MEDIA_TMP_DIR` to choose the temp directory, and `SPR_MEDIA_TMP_KEEP=1` to keep temp files for debugging.
+- ffprobe is optional. If it is missing, the response will include `ffprobe_error`.
+- You can set `SPR_FFPROBE_PATH` to point to a specific `ffprobe` binary.
+
 ## Docker
 
 This project can run as a small Docker service (serves the web UI + `/api/resolve`).
@@ -100,6 +116,8 @@ Then open:
 docker compose up -d --build
 ```
 
+Docker images install `ffmpeg` so `/api/media-info` can return ffprobe metadata.
+
 ### 1) With args
 
 ```powershell
@@ -118,6 +136,12 @@ node .\bin\sorai-permalink.js "s_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 ```powershell
 node .\bin\sorai-permalink.js "s_..." --raw
+```
+
+### 4) Download and metadata
+
+```powershell
+node .\bin\sorai-permalink.js "s_..." --download .\out\ --meta
 ```
 
 ## Notes

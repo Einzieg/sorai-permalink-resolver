@@ -3,6 +3,7 @@
   Local server (no deps):
   - Serves ./web as a static site
   - Provides POST /api/resolve to proxy requests to the parse server (avoids CORS)
+  - Provides POST /api/media-info to download a video to a temp dir and read its metadata (ffprobe)
 
   Env:
     SORAI_PARSE_URL   (optional) default parse server base URL
@@ -16,6 +17,10 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
+const os = require('node:os');
+const { Readable, Transform } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const { URL } = require('node:url');
 
 const ROOT = __dirname;
@@ -23,9 +28,20 @@ const WEB_DIR = path.join(ROOT, 'web');
 const FALLBACK_PORT = 3131;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_HOST = '127.0.0.1';
+const DEFAULT_MEDIA_INFO_TIMEOUT_MS = 60_000;
+const DEFAULT_MEDIA_INFO_HEAD_TIMEOUT_MS = 15_000;
+const DEFAULT_MEDIA_INFO_MAX_BYTES = 512 * 1024 * 1024;
 
 const AUTH_COOKIE = 'spr_auth';
 const AUTH_TTL_SEC = 7 * 24 * 60 * 60; // 7 days
+
+function getMaxBytes() {
+  const raw = String(process.env.SPR_MEDIA_MAX_BYTES || '').trim();
+  if (!raw) return DEFAULT_MEDIA_INFO_MAX_BYTES;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  return DEFAULT_MEDIA_INFO_MAX_BYTES;
+}
 
 function json(res, status, body) {
   const txt = JSON.stringify(body);
@@ -90,6 +106,217 @@ function normalizeDownloadLink(input) {
   }
 
   return s;
+}
+
+function parseHostAllowlist() {
+  const raw = String(process.env.SPR_MEDIA_ALLOW_HOSTS || '').trim();
+  if (!raw) return { any: false, hosts: new Set(['videos.openai.com']) };
+  const parts = raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.includes('*')) return { any: true, hosts: new Set() };
+  return { any: false, hosts: new Set(parts) };
+}
+
+function isHostAllowed(hostname) {
+  const allow = parseHostAllowlist();
+  if (allow.any) return true;
+  return allow.hosts.has(String(hostname || '').toLowerCase());
+}
+
+function pickMediaHeaders(headers) {
+  const keys = [
+    'content-type',
+    'content-length',
+    'accept-ranges',
+    'content-range',
+    'last-modified',
+    'etag',
+    'cache-control',
+    'expires',
+    'content-disposition',
+  ];
+  const out = {};
+  for (const k of keys) {
+    const v = headers.get(k);
+    if (v != null && String(v).trim()) out[k.replaceAll('-', '_')] = String(v);
+  }
+  return out;
+}
+
+async function headInfo(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      headers: { accept: '*/*' },
+      signal: ctrl.signal,
+    });
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      status_text: res.statusText,
+      url: res.url || url,
+      headers: pickMediaHeaders(res.headers),
+    };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function makeByteLimitTransform(maxBytes) {
+  let total = 0;
+  const t = new Transform({
+    transform(chunk, enc, cb) {
+      total += chunk.length;
+      if (maxBytes && total > maxBytes) return cb(new Error('download_too_large'));
+      return cb(null, chunk);
+    },
+  });
+  t.getTotalBytes = () => total;
+  return t;
+}
+
+function tmpMediaDir() {
+  const base = String(process.env.SPR_MEDIA_TMP_DIR || '').trim() || os.tmpdir();
+  const prefix = path.join(base, 'spr-media-');
+  return fs.mkdtempSync(prefix);
+}
+
+async function downloadToTempFile(url, { timeoutMs, maxBytes }) {
+  const dir = tmpMediaDir();
+  const filePath = path.join(dir, `${crypto.randomUUID()}.bin`);
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      headers: { accept: '*/*' },
+      signal: ctrl.signal,
+    });
+
+    const finalUrl = res.url || url;
+
+    if (!res.ok) {
+      const e = new Error(`download_http_${res.status}`);
+      e.detail = `HTTP ${res.status} ${res.statusText}`;
+      throw e;
+    }
+
+    const lenRaw = res.headers.get('content-length');
+    const len = lenRaw ? Number(lenRaw) : null;
+    if (Number.isFinite(len) && maxBytes && len > maxBytes) {
+      const e = new Error('download_too_large');
+      e.detail = `content-length ${len} > max_bytes ${maxBytes}`;
+      throw e;
+    }
+
+    if (!res.body) throw new Error('download_no_body');
+
+    const limiter = makeByteLimitTransform(maxBytes);
+    const file = fs.createWriteStream(filePath);
+    try {
+      await pipeline(Readable.fromWeb(res.body), limiter, file);
+    } catch (err) {
+      try {
+        file.destroy();
+      } catch {
+        // ignore
+      }
+      try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      } catch {
+        // ignore
+      }
+      throw err;
+    }
+
+    return {
+      ok: true,
+      dir,
+      path: filePath,
+      url: finalUrl,
+      bytes: limiter.getTotalBytes(),
+      headers: pickMediaHeaders(res.headers),
+    };
+  } catch (err) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    throw err;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function ffprobeJson(input, timeoutMs) {
+  const bin = String(process.env.SPR_FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
+  const args = [
+    '-v',
+    'error',
+    '-print_format',
+    'json',
+    '-show_format',
+    '-show_streams',
+    input,
+  ];
+
+  return await new Promise((resolve, reject) => {
+    const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+
+    const killTimer = setTimeout(() => {
+      try {
+        p.kill();
+      } catch {
+        // ignore
+      }
+      reject(new Error('ffprobe_timeout'));
+    }, timeoutMs);
+
+    p.stdout.setEncoding('utf8');
+    p.stderr.setEncoding('utf8');
+    p.stdout.on('data', (c) => (out += c));
+    p.stderr.on('data', (c) => (err += c));
+
+    p.on('error', (e) => {
+      clearTimeout(killTimer);
+      reject(e);
+    });
+
+    p.on('close', (code) => {
+      clearTimeout(killTimer);
+      if (code !== 0) {
+        const e = new Error('ffprobe_failed');
+        e.detail = err || `ffprobe exited with code ${code}`;
+        reject(e);
+        return;
+      }
+
+      let json;
+      try {
+        json = out ? JSON.parse(out) : null;
+      } catch {
+        json = null;
+      }
+      if (!json || typeof json !== 'object') {
+        const e = new Error('ffprobe_invalid_json');
+        e.detail = out || err;
+        reject(e);
+        return;
+      }
+      resolve(json);
+    });
+  });
 }
 
 function parseCookies(req) {
@@ -588,6 +815,153 @@ async function main() {
           json(res, status, { error: detail });
         }
         return;
+      }
+
+      if (u.pathname === '/api/media-info') {
+        if (req.method === 'OPTIONS') {
+          res.writeHead(204, {
+            'access-control-allow-origin': '*',
+            'access-control-allow-headers': 'content-type, x-spr-auth',
+            'access-control-allow-methods': 'POST, OPTIONS',
+            'access-control-max-age': '600',
+          });
+          res.end();
+          return;
+        }
+
+        if (req.method !== 'POST') return json(res, 405, { error: 'method_not_allowed' });
+
+        const started = Date.now();
+        const body = await readBody(req);
+        let payload;
+        try {
+          payload = body ? JSON.parse(body) : {};
+        } catch {
+          return json(res, 400, { error: 'invalid_json' });
+        }
+
+        const timeoutMs =
+          Number(payload.timeout_ms || payload.timeoutMs || DEFAULT_MEDIA_INFO_TIMEOUT_MS) ||
+          DEFAULT_MEDIA_INFO_TIMEOUT_MS;
+        const headTimeoutMs =
+          Number(payload.head_timeout_ms || payload.headTimeoutMs || DEFAULT_MEDIA_INFO_HEAD_TIMEOUT_MS) ||
+          DEFAULT_MEDIA_INFO_HEAD_TIMEOUT_MS;
+        const downloadTimeoutMs = Number(payload.download_timeout_ms || payload.downloadTimeoutMs || timeoutMs) || timeoutMs;
+        const wantFfprobe =
+          payload.ffprobe === true || payload.ffprobe === 1 || String(payload.ffprobe || '').trim() === '1';
+        const ffprobeTimeoutMs = Number(payload.ffprobe_timeout_ms || payload.ffprobeTimeoutMs || timeoutMs) || timeoutMs;
+
+        const maxBytesRaw = payload.max_bytes ?? payload.maxBytes;
+        let maxBytes = getMaxBytes();
+        if (maxBytesRaw != null && String(maxBytesRaw).trim() !== '') {
+          const n = Number(maxBytesRaw);
+          if (Number.isFinite(n) && n >= 0) maxBytes = Math.floor(n);
+        }
+
+        const keepTemp =
+          payload.keep_temp === true ||
+          payload.keepTemp === true ||
+          String(payload.keep_temp ?? payload.keepTemp ?? '').trim() === '1' ||
+          String(process.env.SPR_MEDIA_TMP_KEEP || '').trim() === '1';
+
+        const ffprobeSourceRaw = String(payload.ffprobe_source || payload.ffprobeSource || 'download')
+          .trim()
+          .toLowerCase();
+        const ffprobeSource = ffprobeSourceRaw === 'url' ? 'url' : ffprobeSourceRaw === 'auto' ? 'auto' : 'download';
+
+        const input = normalizeDownloadLink(payload.url || payload.download_link || '');
+        if (!input) return json(res, 400, { error: 'missing_url' });
+
+        let mediaUrl;
+        try {
+          mediaUrl = new URL(input);
+        } catch {
+          return json(res, 400, { error: 'invalid_url' });
+        }
+
+        if (mediaUrl.protocol !== 'https:' && mediaUrl.protocol !== 'http:') {
+          return json(res, 400, { error: 'invalid_protocol' });
+        }
+
+        if (!isHostAllowed(mediaUrl.hostname)) {
+          return json(res, 400, { error: 'host_not_allowed' });
+        }
+
+        let head = null;
+        let download = null;
+        let ffprobe = null;
+        let ffprobe_error = null;
+
+        try {
+          head = await headInfo(mediaUrl.toString(), headTimeoutMs);
+        } catch (e) {
+          head = {
+            ok: false,
+            status: null,
+            status_text: null,
+            url: mediaUrl.toString(),
+            error: String(e && e.message ? e.message : e),
+          };
+        }
+
+        if (wantFfprobe) {
+          if (ffprobeSource === 'url') {
+            try {
+              ffprobe = await ffprobeJson(mediaUrl.toString(), ffprobeTimeoutMs);
+            } catch (e) {
+              ffprobe_error = e && e.detail ? String(e.detail) : String(e && e.message ? e.message : e);
+            }
+          } else {
+            let tmp = null;
+            try {
+              tmp = await downloadToTempFile(mediaUrl.toString(), { timeoutMs: downloadTimeoutMs, maxBytes });
+              download = {
+                ok: true,
+                bytes: tmp.bytes,
+                max_bytes: maxBytes,
+                url: tmp.url,
+                headers: tmp.headers,
+              };
+
+              ffprobe = await ffprobeJson(tmp.path, ffprobeTimeoutMs);
+            } catch (e) {
+              const detail = e && e.detail ? String(e.detail) : String(e && e.message ? e.message : e);
+              if (!download) download = { ok: false, error: detail, max_bytes: maxBytes };
+              ffprobe_error = detail;
+
+              if (ffprobeSource === 'auto') {
+                try {
+                  ffprobe = await ffprobeJson(mediaUrl.toString(), ffprobeTimeoutMs);
+                  ffprobe_error = null;
+                } catch (e2) {
+                  ffprobe_error =
+                    e2 && e2.detail ? String(e2.detail) : String(e2 && e2.message ? e2.message : e2);
+                }
+              }
+            } finally {
+              if (tmp && !keepTemp) {
+                try {
+                  fs.rmSync(tmp.dir, { recursive: true, force: true });
+                } catch {
+                  // ignore
+                }
+              }
+              if (tmp && keepTemp) {
+                if (!download || typeof download !== 'object') download = { ok: true };
+                download.temp_path = tmp.path;
+              }
+            }
+          }
+        }
+
+        return json(res, 200, {
+          url: mediaUrl.toString(),
+          head,
+          download,
+          ffprobe,
+          ffprobe_error,
+          duration_ms: Date.now() - started,
+        });
       }
 
       // Static

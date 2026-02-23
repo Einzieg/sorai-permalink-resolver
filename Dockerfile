@@ -2,6 +2,9 @@ FROM node:22-alpine
 
 WORKDIR /app
 
+# For /api/media-info ffprobe metadata.
+RUN apk add --no-cache ffmpeg
+
 # Runtime defaults (can be overridden at `docker run` / compose time)
 ENV NODE_ENV=production
 ENV PORT=3131
