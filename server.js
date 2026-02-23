@@ -3,7 +3,7 @@
   Local server (no deps):
   - Serves ./web as a static site
   - Provides POST /api/resolve to proxy requests to the parse server (avoids CORS)
-  - Provides POST /api/media-info to download a video to a temp dir and read its metadata (ffprobe)
+  - Provides POST /api/media-info to download a video to a temp dir and read its metadata (ffprobe + C2PA)
 
   Env:
     SORAI_PARSE_URL   (optional) default parse server base URL
@@ -317,6 +317,156 @@ async function ffprobeJson(input, timeoutMs) {
       resolve(json);
     });
   });
+}
+
+async function exiftoolJson(inputPath, timeoutMs) {
+  const bin = String(process.env.SPR_EXIFTOOL_PATH || 'exiftool').trim() || 'exiftool';
+  const args = [
+    '-api',
+    'LargeFileSupport=1',
+    '-j',
+    '-u',
+    '-struct',
+    '-jumbf:all',
+    '-ClaimGenerator',
+    '-ClaimGeneratorInfoName',
+    '-ClaimGeneratorInfoVersion',
+    '-ActionsAction',
+    '-ActionsSoftwareAgent',
+    '-ActionsSoftwareAgentName',
+    '-ActionsSoftwareAgentVersion',
+    '-ActionsDigitalSourceType',
+    inputPath,
+  ];
+
+  return await new Promise((resolve, reject) => {
+    const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+
+    const killTimer = setTimeout(() => {
+      try {
+        p.kill();
+      } catch {
+        // ignore
+      }
+      reject(new Error('exiftool_timeout'));
+    }, timeoutMs);
+
+    p.stdout.setEncoding('utf8');
+    p.stderr.setEncoding('utf8');
+    p.stdout.on('data', (c) => (out += c));
+    p.stderr.on('data', (c) => (err += c));
+
+    p.on('error', (e) => {
+      clearTimeout(killTimer);
+      reject(e);
+    });
+
+    p.on('close', (code) => {
+      clearTimeout(killTimer);
+      if (code !== 0) {
+        const e = new Error('exiftool_failed');
+        e.detail = err || `exiftool exited with code ${code}`;
+        reject(e);
+        return;
+      }
+
+      let json;
+      try {
+        json = out ? JSON.parse(out) : null;
+      } catch {
+        json = null;
+      }
+
+      const row = Array.isArray(json) && json.length ? json[0] : null;
+      if (!row || typeof row !== 'object') {
+        const e = new Error('exiftool_invalid_json');
+        e.detail = out || err;
+        reject(e);
+        return;
+      }
+
+      resolve(row);
+    });
+  });
+}
+
+function normalizeExifKey(key) {
+  const raw = String(key || '');
+  const last = raw.includes(':') ? raw.split(':').pop() : raw;
+  return last.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function extractValueStrings(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value.flatMap(extractValueStrings);
+  if (typeof value === 'object') {
+    const name =
+      value.name ??
+      value.Name ??
+      value.softwareAgentName ??
+      value.SoftwareAgentName ??
+      value.claimGeneratorInfoName ??
+      value.ClaimGeneratorInfoName;
+    if (typeof name === 'string' && name.trim()) return [name.trim()];
+    return [];
+  }
+  const s = String(value).trim();
+  if (!s) return [];
+  return [s];
+}
+
+function summarizeC2paFromExif(exifRow) {
+  if (!exifRow || typeof exifRow !== 'object') return null;
+
+  const buckets = {
+    claim_generator: [],
+    claim_generator_info_names: [],
+    claim_generator_info_versions: [],
+    actions: [],
+    actions_software_agent_names: [],
+    actions_software_agent_versions: [],
+    actions_digital_source_types: [],
+  };
+
+  const wants = new Map([
+    ['claimgenerator', 'claim_generator'],
+    ['claimgeneratorinfoname', 'claim_generator_info_names'],
+    ['claimgeneratorinfoversion', 'claim_generator_info_versions'],
+    ['actionsaction', 'actions'],
+    ['actionssoftwareagentname', 'actions_software_agent_names'],
+    ['actionssoftwareagent', 'actions_software_agent_names'],
+    ['actionssoftwareagentversion', 'actions_software_agent_versions'],
+    ['actionsdigitalsourcetype', 'actions_digital_source_types'],
+  ]);
+
+  for (const [k, v] of Object.entries(exifRow)) {
+    const nk = normalizeExifKey(k);
+    const bucket = wants.get(nk);
+    if (!bucket) continue;
+    buckets[bucket].push(...extractValueStrings(v));
+  }
+
+  const out = {};
+  for (const [k, arr] of Object.entries(buckets)) {
+    const uniq = Array.from(new Set(arr.map((s) => String(s).trim()).filter(Boolean)));
+    if (uniq.length) out[k] = uniq;
+  }
+
+  if (!Object.keys(out).length) return null;
+
+  if (Array.isArray(out.claim_generator_info_names) && out.claim_generator_info_names.length) {
+    out.claim_generator_info_name = out.claim_generator_info_names[0];
+    out['Claim Generator Info Name'] = out.claim_generator_info_names[0];
+  }
+
+  if (Array.isArray(out.actions_software_agent_names) && out.actions_software_agent_names.length) {
+    out.actions_software_agent_name = out.actions_software_agent_names[0];
+    out['Actions Software Agent Name'] = out.actions_software_agent_names[0];
+  }
+
+  return out;
 }
 
 function parseCookies(req) {
@@ -891,6 +1041,8 @@ async function main() {
         let download = null;
         let ffprobe = null;
         let ffprobe_error = null;
+        let c2pa = null;
+        let c2pa_error = null;
 
         try {
           head = await headInfo(mediaUrl.toString(), headTimeoutMs);
@@ -922,6 +1074,13 @@ async function main() {
                 url: tmp.url,
                 headers: tmp.headers,
               };
+
+              try {
+                const exifRow = await exiftoolJson(tmp.path, timeoutMs);
+                c2pa = summarizeC2paFromExif(exifRow);
+              } catch (e) {
+                c2pa_error = e && e.detail ? String(e.detail) : String(e && e.message ? e.message : e);
+              }
 
               ffprobe = await ffprobeJson(tmp.path, ffprobeTimeoutMs);
             } catch (e) {
@@ -960,6 +1119,8 @@ async function main() {
           download,
           ffprobe,
           ffprobe_error,
+          c2pa,
+          c2pa_error,
           duration_ms: Date.now() - started,
         });
       }

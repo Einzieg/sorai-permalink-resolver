@@ -63,10 +63,12 @@ Notes:
 
 - By default, `/api/media-info` only allows `videos.openai.com` (to reduce SSRF risk). Override with `SPR_MEDIA_ALLOW_HOSTS` (comma-separated hostnames, or `*`).
 - When `ffprobe=1`, the server downloads the media to a temp file first, then runs `ffprobe` on the local file.
+- The server will also try to extract C2PA fields (e.g. `ClaimGeneratorInfoName`, `ActionsSoftwareAgent`) via `exiftool` and return them in `c2pa` / `c2pa_error`.
 - Temp download size is limited by `SPR_MEDIA_MAX_BYTES` (default 512 MiB).
 - Use `SPR_MEDIA_TMP_DIR` to choose the temp directory, and `SPR_MEDIA_TMP_KEEP=1` to keep temp files for debugging.
 - ffprobe is optional. If it is missing, the response will include `ffprobe_error`.
 - You can set `SPR_FFPROBE_PATH` to point to a specific `ffprobe` binary.
+- You can set `SPR_EXIFTOOL_PATH` to point to a specific `exiftool` binary.
 
 ## Docker
 
@@ -116,7 +118,7 @@ Then open:
 docker compose up -d --build
 ```
 
-Docker images install `ffmpeg` so `/api/media-info` can return ffprobe metadata.
+Docker images install `ffmpeg` + `exiftool` so `/api/media-info` can return ffprobe + C2PA metadata.
 
 ### 1) With args
 

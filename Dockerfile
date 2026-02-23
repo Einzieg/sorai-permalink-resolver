@@ -2,8 +2,8 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# For /api/media-info ffprobe metadata.
-RUN apk add --no-cache ffmpeg
+# For /api/media-info ffprobe + C2PA metadata.
+RUN apk add --no-cache ffmpeg perl-image-exiftool
 
 # Runtime defaults (can be overridden at `docker run` / compose time)
 ENV NODE_ENV=production
