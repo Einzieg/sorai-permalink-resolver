@@ -321,75 +321,70 @@ async function ffprobeJson(input, timeoutMs) {
 
 async function exiftoolJson(inputPath, timeoutMs) {
   const bin = String(process.env.SPR_EXIFTOOL_PATH || 'exiftool').trim() || 'exiftool';
-  const args = [
-    '-api',
-    'LargeFileSupport=1',
-    '-j',
-    '-u',
-    '-struct',
-    '-jumbf:all',
-    '-ClaimGenerator',
-    '-ClaimGeneratorInfoName',
-    '-ClaimGeneratorInfoVersion',
-    '-ActionsAction',
-    '-ActionsSoftwareAgent',
-    '-ActionsSoftwareAgentName',
-    '-ActionsSoftwareAgentVersion',
-    '-ActionsDigitalSourceType',
-    inputPath,
-  ];
+  const baseArgs = ['-api', 'LargeFileSupport=1', '-G3', '-j', '-u', '-struct', '-a'];
 
-  return await new Promise((resolve, reject) => {
-    const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
-    let err = '';
+  const runOnce = async (extraArgs) => {
+    const args = [...baseArgs, ...extraArgs, inputPath];
+    return await new Promise((resolve, reject) => {
+      const p = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      let err = '';
 
-    const killTimer = setTimeout(() => {
-      try {
-        p.kill();
-      } catch {
-        // ignore
-      }
-      reject(new Error('exiftool_timeout'));
-    }, timeoutMs);
+      const killTimer = setTimeout(() => {
+        try {
+          p.kill();
+        } catch {
+          // ignore
+        }
+        reject(new Error('exiftool_timeout'));
+      }, timeoutMs);
 
-    p.stdout.setEncoding('utf8');
-    p.stderr.setEncoding('utf8');
-    p.stdout.on('data', (c) => (out += c));
-    p.stderr.on('data', (c) => (err += c));
+      p.stdout.setEncoding('utf8');
+      p.stderr.setEncoding('utf8');
+      p.stdout.on('data', (c) => (out += c));
+      p.stderr.on('data', (c) => (err += c));
 
-    p.on('error', (e) => {
-      clearTimeout(killTimer);
-      reject(e);
-    });
+      p.on('error', (e) => {
+        clearTimeout(killTimer);
+        reject(e);
+      });
 
-    p.on('close', (code) => {
-      clearTimeout(killTimer);
-      if (code !== 0) {
+      p.on('close', (code) => {
+        clearTimeout(killTimer);
+
+        let json;
+        try {
+          json = out ? JSON.parse(out) : null;
+        } catch {
+          json = null;
+        }
+
+        const row = Array.isArray(json) && json.length ? json[0] : null;
+        if (row && typeof row === 'object') {
+          // exiftool may return exit code 1 for warnings; accept it if JSON is valid.
+          if (code === 0 || code === 1) {
+            resolve(row);
+            return;
+          }
+        }
+
         const e = new Error('exiftool_failed');
-        e.detail = err || `exiftool exited with code ${code}`;
+        e.detail = err || out || `exiftool exited with code ${code}`;
         reject(e);
-        return;
-      }
-
-      let json;
-      try {
-        json = out ? JSON.parse(out) : null;
-      } catch {
-        json = null;
-      }
-
-      const row = Array.isArray(json) && json.length ? json[0] : null;
-      if (!row || typeof row !== 'object') {
-        const e = new Error('exiftool_invalid_json');
-        e.detail = out || err;
-        reject(e);
-        return;
-      }
-
-      resolve(row);
+      });
     });
-  });
+  };
+
+  const merged = await runOnce([]);
+  for (const extraArgs of [['-jumbf:all'], ['-cbor:all']]) {
+    try {
+      Object.assign(merged, await runOnce(extraArgs));
+    } catch {
+      // ignore
+    }
+  }
+
+  return merged;
 }
 
 function normalizeExifKey(key) {
@@ -434,6 +429,7 @@ function summarizeC2paFromExif(exifRow) {
     ['claimgenerator', 'claim_generator'],
     ['claimgeneratorinfoname', 'claim_generator_info_names'],
     ['claimgeneratorinfoversion', 'claim_generator_info_versions'],
+    ['claimgeneratorinfo', 'claim_generator_info_names'],
     ['actionsaction', 'actions'],
     ['actionssoftwareagentname', 'actions_software_agent_names'],
     ['actionssoftwareagent', 'actions_software_agent_names'],
@@ -441,12 +437,23 @@ function summarizeC2paFromExif(exifRow) {
     ['actionsdigitalsourcetype', 'actions_digital_source_types'],
   ]);
 
-  for (const [k, v] of Object.entries(exifRow)) {
-    const nk = normalizeExifKey(k);
-    const bucket = wants.get(nk);
-    if (!bucket) continue;
-    buckets[bucket].push(...extractValueStrings(v));
-  }
+  const walk = (node) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const it of node) walk(it);
+      return;
+    }
+    if (typeof node !== 'object') return;
+
+    for (const [k, v] of Object.entries(node)) {
+      const nk = normalizeExifKey(k);
+      const bucket = wants.get(nk);
+      if (bucket) buckets[bucket].push(...extractValueStrings(v));
+      walk(v);
+    }
+  };
+
+  walk(exifRow);
 
   const out = {};
   for (const [k, arr] of Object.entries(buckets)) {
@@ -1078,6 +1085,7 @@ async function main() {
               try {
                 const exifRow = await exiftoolJson(tmp.path, timeoutMs);
                 c2pa = summarizeC2paFromExif(exifRow);
+                if (!c2pa) c2pa_error = 'c2pa_not_found';
               } catch (e) {
                 c2pa_error = e && e.detail ? String(e.detail) : String(e && e.message ? e.message : e);
               }
