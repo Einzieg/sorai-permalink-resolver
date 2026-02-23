@@ -5,9 +5,9 @@ services:
     container_name: sorai-permalink-resolver
     restart: unless-stopped
     ports:
-      - "3131:3131"
+      - "13131:13131"
     environment:
-      PORT: "3131"
+      PORT: "13131"
       HOST: "0.0.0.0"
       SPR_STRICT_PORT: "1"
       SPR_AUTH_KEY: "${SPR_AUTH_KEY}"

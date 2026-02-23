@@ -3,12 +3,11 @@ FROM node:22-alpine
 WORKDIR /app
 
 # For /api/media-info ffprobe + C2PA metadata.
-# Note: the `exiftool` CLI is a separate package from `perl-image-exiftool`.
 RUN apk add --no-cache ffmpeg exiftool
 
 # Runtime defaults (can be overridden at `docker run` / compose time)
 ENV NODE_ENV=production
-ENV PORT=3131
+ENV PORT=13131
 ENV HOST=0.0.0.0
 ENV SPR_STRICT_PORT=1
 
@@ -20,7 +19,7 @@ COPY bin ./bin
 COPY README.md ./README.md
 COPY LICENSE ./LICENSE
 
-EXPOSE 3131
+EXPOSE 13131
 
 USER node
 
