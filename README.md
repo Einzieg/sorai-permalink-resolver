@@ -24,7 +24,7 @@ sorai-permalink "https://sora.chatgpt.com/p/s_..." --parse-url "https://api.sora
 Copy `d:\sorai-permalink-resolver\.env.example` to `.env` and edit:
 
 ```text
-PORT=3131
+PORT=13131
 SPR_AUTH_KEY=YOUR_SITE_KEY
 SORAI_PARSE_URL=https://api.sorai.me
 SORAI_PARSE_TOKEN=YOUR_TOKEN
@@ -42,7 +42,7 @@ npm start
 
 Then open:
 
-- `http://127.0.0.1:3131/` (if 3131 is busy, the server will auto-pick the next free port unless `SPR_STRICT_PORT=1`)
+- `http://127.0.0.1:13131/` (if 13131 is busy, the server will auto-pick the next free port unless `SPR_STRICT_PORT=1`)
 
 If you set `SPR_AUTH_KEY`, the site will ask for the key on entry.
 
@@ -90,7 +90,7 @@ Option A: pass env vars directly:
 
 ```bash
 docker run -d --name sorai-permalink-resolver --restart unless-stopped \
-  -p 3131:3131 \
+  -p 13131:13131 \
   -e SORAI_PARSE_URL="https://api.sorai.me" \
   -e SORAI_PARSE_TOKEN="YOUR_PARSE_TOKEN_HERE" \
   sorai-permalink-resolver:latest
@@ -100,14 +100,14 @@ Option B: use an env file:
 
 ```bash
 docker run -d --name sorai-permalink-resolver --restart unless-stopped \
-  -p 3131:3131 \
+  -p 13131:13131 \
   --env-file ./.env \
   sorai-permalink-resolver:latest
 ```
 
 Then open:
 
-- `http://<server-ip>:3131/`
+- `http://<server-ip>:13131/`
 
 ### 3) Docker Compose
 
